@@ -198,7 +198,7 @@ class ComputrabajoScraper:
             '_job_application_deadline_date': default_deadline,
             '_job_address': self.get_address(detail_soup,card),
             '_job_location': self.get_location(detail_soup, card),
-            '_job_map_location': self.get_map_location(detail_soup),
+            '_job_map_location': self.get_map_location(detail_soup,card),
         }
         
         return job
@@ -492,10 +492,9 @@ class ComputrabajoScraper:
     def get_location(self, soup, card):
         return self.get_address(soup, card)
     
-    def get_map_location(self, soup):
+    def get_map_location(self, soup, card):
         """Get Google Maps link"""
-        map_link = soup.find('a', href=re.compile(r'maps\.google|goo\.gl'))
-        return map_link.get('href', '') if map_link else ''
+        return self.get_address(soup, card)
     
     def save_to_json(self, jobs, filename='jobs_computrabajo.json'):
         """Save scraped data to JSON file"""
