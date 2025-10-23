@@ -4,8 +4,10 @@ import json
 import re
 from datetime import datetime, timedelta
 import time
+
 now = datetime.now()
 default_deadline = (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d")
+
 class ComputrabajoScraper:
     def __init__(self):
         self.base_url = "https://cr.computrabajo.com"
@@ -18,13 +20,24 @@ class ComputrabajoScraper:
         }
         self.session = requests.Session()
     
-    def scrape_all_pages(self, base_url, max_pages=None):
-        """Scrape all pages with pagination"""
+    def scrape_all_pages(self, base_url, max_pages=None, max_jobs=None):
+        """Scrape all pages with pagination
+        
+        Args:
+            base_url: Starting URL
+            max_pages: Maximum number of pages to scrape (None for unlimited)
+            max_jobs: Maximum number of jobs to scrape (None for unlimited)
+        """
         all_jobs = []
         page = 1
         consecutive_empty = 0
         
         while True:
+            # Check if we've reached the job limit
+            if max_jobs and len(all_jobs) >= max_jobs:
+                print(f"\n✓ Reached maximum jobs limit ({max_jobs})")
+                break
+            
             if page == 1:
                 url = base_url
             else:
@@ -35,7 +48,13 @@ class ComputrabajoScraper:
             print(f"Scraping Page {page}")
             print(f"{'='*60}")
             
-            jobs = self.scrape_job_listings(url)
+            # Calculate how many more jobs we need
+            jobs_remaining = None
+            if max_jobs:
+                jobs_remaining = max_jobs - len(all_jobs)
+                print(f"Jobs remaining to scrape: {jobs_remaining}")
+            
+            jobs = self.scrape_job_listings(url, max_jobs_this_page=jobs_remaining)
             
             if not jobs:
                 consecutive_empty += 1
@@ -62,8 +81,13 @@ class ComputrabajoScraper:
         """Check if there's a next page available"""
         return True
     
-    def scrape_job_listings(self, url):
-        """Scrape all job listings from the main page"""
+    def scrape_job_listings(self, url, max_jobs_this_page=None):
+        """Scrape job listings from the main page
+        
+        Args:
+            url: Page URL to scrape
+            max_jobs_this_page: Maximum jobs to scrape from this page (None for all)
+        """
         print(f"Fetching: {url}")
         try:
             response = self.session.get(url, headers=self.headers, timeout=30)
@@ -82,6 +106,10 @@ class ComputrabajoScraper:
                 all_links = soup.find_all('a', href=re.compile('/ofertas-de-trabajo/'))
                 job_cards = [link.find_parent(['article', 'div']) for link in all_links if link.find_parent(['article', 'div'])]
                 job_cards = list({id(card): card for card in job_cards if card}.values())
+            
+            # Limit job cards if max specified
+            if max_jobs_this_page:
+                job_cards = job_cards[:max_jobs_this_page]
             
             print(f"Found {len(job_cards)} job cards on listing page")
             
@@ -202,7 +230,6 @@ class ComputrabajoScraper:
         urgent = card.find(string=re.compile('Se precisa Urgente|Urgente', re.I))
         return bool(urgent)
     
-    
     def get_description(self, soup):
         """Get job description with clean paragraph and list formatting using \n\n."""
         import copy
@@ -243,10 +270,10 @@ class ComputrabajoScraper:
             # Extract full text from container
             text = desc_clone.get_text(" ", strip=True)
 
-            # ✅ Put each numbered item (1., 2., etc.) onto its own line
+            # Put each numbered item (1., 2., etc.) onto its own line
             text = re.sub(r'\s*(?=\d+\.\s*)', '\n', text)
 
-            # ✅ Section headers on new lines
+            # Section headers on new lines
             section_keywords = [
                 'Requisitos:', 'Requerimientos:', 'Se ofrece:', 'Ofrecemos:',
                 'Aportar:', 'Funciones:', 'Responsabilidades:'
@@ -254,26 +281,26 @@ class ComputrabajoScraper:
             for kw in section_keywords:
                 text = re.sub(r'\s*' + re.escape(kw), f'\n{kw}', text, flags=re.I)
 
-            # ✅ Format bullet points
+            # Format bullet points
             text = re.sub(r'\s*-\s*', '\n- ', text)
 
-            # ✅ Add paragraph breaks between sentences
+            # Add paragraph breaks between sentences
             text = re.sub(r'([.!?])\s+(?=[A-ZÁÉÍÓÚ])', r'\1\n', text)
 
-            # ✅ Clean up line breaks
+            # Clean up line breaks
             text = re.sub(r'\n{3,}', '\n', text)
             text = re.sub(r'\n{2,}(?=\d+\.)', '\n', text)
 
-            # ✅ Remove salary patterns
+            # Remove salary patterns
             for pattern in salary_patterns:
                 text = re.sub(pattern, '', text, flags=re.I)
 
-            # ✅ Normalize spaces
+            # Normalize spaces
             text = re.sub(r'[ \t]+', ' ', text)
             text = text.strip()
 
             if len(text) > 50:
-                # ✅ Remove number prefixes but keep the structure and formatting
+                # Remove number prefixes but keep the structure and formatting
                 lines = text.splitlines()
                 cleaned_lines = []
                 
@@ -298,50 +325,38 @@ class ComputrabajoScraper:
         return ''
         
     def get_category(self, soup):
-        """Get job category - FIXED VERSION"""
-        # Look for the right sidebar with job category/position
-        # The category is shown in the right modal as "Anestesiólogo/a"
-        
-        # Method 1: Find in the sidebar/box with "Importante empresa del sector"
+        """Get job category"""
         sidebar = soup.find('div', class_=re.compile('box-new|right|side|panel', re.I))
         if sidebar:
-            # Look for the job title in the sidebar (usually in h2 or h3)
             category_tag = sidebar.find(['h2', 'h3', 'h4'])
             if category_tag:
                 category = category_tag.get_text(strip=True)
-                # Clean up if it contains extra info
-                category = re.sub(r'\s*-.*$', '', category)  # Remove anything after dash
-                if category and len(category) < 100:  # Reasonable length for category
+                category = re.sub(r'\s*-.*$', '', category)
+                if category and len(category) < 100:
                     return category
         
-        # Method 2: Look for specific text patterns near location
-        # Categories are often near the location info
         location_patterns = ['San José', 'Heredia', 'Cartago', 'Alajuela', 'Guanacaste', 'Puntarenas', 'Limón']
         for pattern in location_patterns:
             location_elem = soup.find(string=re.compile(pattern, re.I))
             if location_elem:
                 parent = location_elem.find_parent(['div', 'section'])
                 if parent:
-                    # Look for heading before or after location
                     category_elem = parent.find_previous(['h2', 'h3', 'h4']) or parent.find(['h2', 'h3', 'h4'])
                     if category_elem:
                         category = category_elem.get_text(strip=True)
                         if category and len(category) < 100:
                             return category
         
-        # Method 3: Extract from main H1 title
         h1 = soup.find('h1')
         if h1:
             title = h1.get_text(strip=True)
-            # Extract job position from title (usually before location or dash)
-            # Example: "Anestesiólogo/a - Sala cirugías / Purral Goicoechea"
             category = re.split(r'\s*[-/]\s*(?:Sala|en|para)', title)[0].strip()
             return category
         
         return ''
     
     def get_type(self, soup):
-        """Get employment type (Tiempo Completo, etc.)"""
+        """Get employment type"""
         type_text = soup.find(string=re.compile('Tiempo Completo|Medio Tiempo|Temporal|Por horas', re.I))
         if type_text:
             return type_text.strip()
@@ -387,15 +402,14 @@ class ComputrabajoScraper:
     def get_salary(self, soup, card):
         salary_text = soup.find(string=re.compile(r'A convenir|₡'))
         if salary_text:
-            # Clean "(Mensual)", "(Anual)", etc.
             clean_salary = re.sub(r'\(.*?\)', '', salary_text)
             clean_salary = clean_salary.strip()
             return clean_salary
         return ''
+    
     def get_max_salary(self, soup, card):
         salary_text = soup.find(string=re.compile(r'A convenir|₡'))
         if salary_text:
-            # Clean "(Mensual)", "(Anual)", etc.
             clean_salary = re.sub(r'\(.*?\)', '', salary_text)
             clean_salary = clean_salary.strip()
             return clean_salary
@@ -446,47 +460,35 @@ class ComputrabajoScraper:
         return photos
     
     def get_address(self, soup, card):
-        """Extract clean city name (e.g., 'Escazú' from 'Escazú, San José').
-        Filters out sentences like 'Asesor de ventas... para San José y Coronado'.
-        """
+        """Extract clean city name"""
         text = ''
 
-        # Primary source: <p class="fs16">
         p_tag = soup.find('p', class_='fs16')
         if p_tag:
             candidate = p_tag.get_text(strip=True)
-            # Must contain a known location keyword
             if re.search(r'(San José|Heredia|Cartago|Alajuela|Guanacaste|Puntarenas|Limón)', candidate, re.I):
                 text = candidate
 
-        # Fallback: look inside card
         if not text and card:
             loc_elem = card.find(string=re.compile(r'(San José|Heredia|Cartago|Alajuela|Guanacaste|Puntarenas|Limón)', re.I))
             if loc_elem:
                 text = loc_elem.strip()
 
-        # ✅ Now clean and extract only city names
         if text:
-            # 1️⃣ Ignore obvious non-address phrases
             if len(text.split()) > 6 or re.search(r'\b(para|de|en|con|por|sector)\b', text, re.I):
-                # Sentence-like, not a location
-                # Try to extract city name from it
                 match = re.search(r'(San José|Heredia|Cartago|Alajuela|Guanacaste|Puntarenas|Limón)', text, re.I)
                 if match:
                     return match.group(1).strip()
                 else:
                     return ''
 
-            # 2️⃣ If it looks like "Escazú, San José", keep only first part
             if ',' in text:
                 return text.split(',')[0].strip()
 
-            # 3️⃣ Otherwise just return it
             return text.strip()
 
         return ''
         
-       
     def get_location(self, soup, card):
         return self.get_address(soup, card)
     
@@ -542,20 +544,18 @@ if __name__ == "__main__":
     base_url = "https://cr.computrabajo.com/empleos-en-san-jose"
     
     print("=" * 60)
-    print("Computrabajo Job Scraper - ALL PAGES")
+    print("Computrabajo Job Scraper - Automatic Mode")
+    print("Scraping 200 jobs from San Jose, Costa Rica")
     print("=" * 60)
+    print(f"\nStart time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     
-    print("\nEnter number of pages to scrape (or press Enter for ALL pages):")
-    max_pages_input = input().strip()
-    
-    if max_pages_input:
-        max_pages = int(max_pages_input)
-        jobs = scraper.scrape_all_pages(base_url, max_pages=max_pages)
-    else:
-        jobs = scraper.scrape_all_pages(base_url)
+    # Automatically scrape exactly 200 jobs
+    jobs = scraper.scrape_all_pages(base_url, max_jobs=200)
     
     print("\n" + "=" * 60)
-    print(f"✓ Successfully scraped {len(jobs)} jobs from all pages")
+    print(f"✓ Scraping completed!")
+    print(f"✓ Total jobs scraped: {len(jobs)}")
+    print(f"✓ End time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 60)
     
     if jobs:
@@ -563,8 +563,14 @@ if __name__ == "__main__":
         scraper.save_to_csv(jobs)
         
         print("\n" + "=" * 60)
-        print("Sample Job Data:")
+        print("Sample Job Data (First Job):")
         print("=" * 60)
         print(json.dumps(jobs[0], indent=2, ensure_ascii=False))
+        
+        print("\n" + "=" * 60)
+        print("Files created:")
+        print("  - jobs_computrabajo.json")
+        print("  - jobs_computrabajo.csv")
+        print("=" * 60)
     else:
-        print("\nNo jobs found. Please check the URL or HTML structure.")
+        print("\n⚠ No jobs found. Please check the URL or HTML structure.")
