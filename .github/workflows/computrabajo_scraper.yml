@@ -1,8 +1,7 @@
 name: Computrabajo Job Scraper
 
 on:
-  schedule:
-    - cron: "30 2 * * *"   # Runs every day at 02:30 UTC
+  
   workflow_dispatch:
 
 jobs:
